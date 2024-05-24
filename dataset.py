@@ -2,7 +2,6 @@ import pandas as pd
 import torch
 from torch import Tensor
 from tqdm import tqdm
-from transformers import AutoTokenizer
 from typing import List, Iterator, Union
 
 
@@ -11,37 +10,48 @@ from typing import List, Iterator, Union
 episode_data_path = "data/SouthPark_Episodes.csv"
 line_data_path = "data/SouthPark_Lines.csv"
 
+truncate_to = 1024
+
 # tokenizer code
 
 _tokenizer = None
+_reverse_tokenizer = None
 
-def _init_tokenizer():
-    global _tokenizer
+def _train_tokenizer(dataset: List[str]) -> None:
+    global _tokenizer, _reverse_tokenizer
     
-    _tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
-    _tokenizer.add_special_tokens({"eos_token": "<EOS>"})
+    _tokenizer = {char: i for i, char in enumerate(set("".join(dataset)))}
+    
+    _tokenizer["\n"] = len(_tokenizer) # use this as padding
+    _tokenizer["~"] = len(_tokenizer) # use this as padding
+    _tokenizer["`"] = len(_tokenizer) # use this as EOS token
+    
+    _reverse_tokenizer = {val: key for key, val in _tokenizer.items()}      
 
-def text_to_ids(text: str, as_tensors:  bool = True) -> List[int]:
-    if _tokenizer is None:
-        _init_tokenizer()
+def text_to_ids(text: List[str]) -> List[List[int]]:
+    if not isinstance(text, list):
+        text = [text]
     
-    if as_tensors:
-        return _tokenizer(text, return_tensors="pt")["input_ids"]
-    else:
-        return _tokenizer(text)["input_ids"]
+    res = []
+    for s in text:
+        res.append([])
+        for char in s:
+            res[-1].append(_tokenizer[char])
+    
+    return Tensor(res).to(torch.int64)
 
-def ids_to_text(ids: List[int]) -> str:
-    if _tokenizer is None:
-        _init_tokenizer()
-    
-    return _tokenizer.decode(ids)
+def ids_to_text(ids: List[List[int]]) -> List[str]:
+    res = []
+    for sentence in ids:
+        res.append([])
+        for id in sentence:
+            res[-1].append(_reverse_tokenizer[id])
+        res[-1] = "".join(res[-1])
+        
+    return res
 
 def get_vocab_size() -> int:
-    if _tokenizer is None:
-        _init_tokenizer()
-        
-    return _tokenizer.vocab_size + 1
-
+    return len(_tokenizer) + 1
 
 # dataset code
 
@@ -55,18 +65,19 @@ def _init_scripts():
     global _scripts
     _scripts = []
     
-    episodes = pd.read_csv(episode_data_path)
     lines = pd.read_csv(line_data_path)
     
-    for episode in tqdm(episodes.iloc, desc="Loading Scripts"):
-        script = [f"title: {episode['Title']}, description: {episode['Description']}"]
-        
-        for line in lines.loc[lines["Title"] == episode["Title"]].iloc:
-            script.append(f"{line['Character']}: {line['Line']}")
-            
-        script[-1] += "<EOS>"
-        _scripts.append("\n".join(script))
-        
+    for line in lines.iloc:
+        new_line = f"{line['Character']}: {line['Line']}"
+        if len(_scripts) == 0:
+            _scripts.append(new_line[:truncate_to - 1])
+        elif len(_scripts[-1]) + len(new_line) < truncate_to - 1:
+            _scripts[-1] += new_line
+        else:
+            _scripts[-1] += "`" + "~"*(truncate_to - len(_scripts[-1]) - 1)
+            _scripts.append(new_line[:truncate_to - 1])
+    
+    _train_tokenizer(_scripts)
 
 
 def get_scripts() -> Iterator[str]:
@@ -88,17 +99,18 @@ def get_scripts_tokens(as_tensors: bool = False) -> Iterator[Union[List[int], Te
     scripts = iter(get_scripts())
     
     for script in scripts:
-        yield text_to_ids(script, as_tensors=as_tensors)
+        yield text_to_ids(script)
         
 
 # embedding functions
 
 def embed_token_ids(tokens: Union[List[int], Tensor]) -> Tensor:
     if isinstance(tokens, list):
-        tokens = Tensor(tokens).to(torch.int64).reshape(1, -1)
+        tokens = Tensor(tokens).to(torch.int64)
     
-    embedding = torch.zeros((tokens.shape[1], get_vocab_size()), dtype=torch.float32)
-    embedding.scatter_(1, tokens, 1.0)
+    embedding = torch.zeros((tokens.shape[0], tokens.shape[1], get_vocab_size()), dtype=torch.float32)
+    
+    embedding.scatter_(2, tokens.unsqueeze(-1), 1.0)
     
     return embedding
     

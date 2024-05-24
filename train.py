@@ -3,17 +3,19 @@ import dataset
 import models
 from torch import optim, nn
 
-test_prompt = f"Title: Cartman Becomes a Gardener, Description: Cartman decides gardening is cool but Kyle thinks Cartman is gay. Meanwhile, Stan and Kenny found a puppy. \n"
+test_prompt = f"Cartman: "
 device = torch.device("cpu")
+
+dataset._init_scripts()
 
 def get_MLP_LM() -> models.SimpleLM:
     return models.SimpleLM(
         dataset.get_vocab_size(),
         16,
         16,
-        256,
+        16,
         2,
-        6,
+        2,
         architecture="MLP",
     )
 
@@ -30,7 +32,7 @@ def get_KAN_LM() -> models.SimpleLM:
     
 def predict_sequence(model: nn.Module, prompt: str, max_length: int = 50) -> str:
     # Tokenize the input prompt
-    input_ids = dataset.text_to_ids(prompt, as_tensors=True).to(device)
+    input_ids = dataset.text_to_ids(prompt).to(device)
 
     # Initialize hidden states as None
     hidden = None
@@ -39,12 +41,12 @@ def predict_sequence(model: nn.Module, prompt: str, max_length: int = 50) -> str
     generated_ids = input_ids.squeeze(0).tolist()
 
     # Loop until the max length is reached or the <EOS> token is generated
-    for _ in range(max_length):
+    while len(generated_ids) < max_length:
         # Embed the token IDs
         embedding = dataset.embed_token_ids(input_ids).to(device)
 
         # Forward pass through the model
-        hidden, pred = model(embedding, hidden)
+        hidden, pred = model(embedding[0], hidden)
 
         # Get the ID of the predicted token (choose the token with the highest probability)
         pred_id = torch.argmax(pred[-1], dim=-1).item()
@@ -53,16 +55,16 @@ def predict_sequence(model: nn.Module, prompt: str, max_length: int = 50) -> str
         generated_ids.append(pred_id)
 
         # Check if the <EOS> token is generated
-        if pred_id == dataset._tokenizer.eos_token_id:
+        if pred_id == "`":
             break
 
         # Update the input_ids for the next iteration
         input_ids = torch.tensor([[pred_id]], device=device)
 
     # Convert the generated token IDs back to text
-    generated_text = dataset.ids_to_text(generated_ids)
+    generated_text = dataset.ids_to_text([generated_ids])
 
-    return generated_text
+    return generated_text[0]
 
 if __name__ == "__main__":
     
@@ -71,10 +73,10 @@ if __name__ == "__main__":
     # First, let's train the MLP model
     mlp_model = get_MLP_LM().to(device).to(torch.float32)
     criterion = nn.CrossEntropyLoss()
-    optimiser = optim.Adam(mlp_model.parameters(), lr=3E-4)
+    optimiser = optim.Adam(mlp_model.parameters(), lr=3E-2)
     
     for epoch in range(epochs):
-        test_script = predict_sequence(mlp_model, test_prompt, max_length=5000)
+        test_script = predict_sequence(mlp_model, test_prompt, max_length=1024)
         with open(f"models/demos/mlp_model_{epoch}.txt", "w") as f:
             f.write(test_script)
         
@@ -83,12 +85,12 @@ if __name__ == "__main__":
             script_tokens = script_tokens.to(device)
             optimiser.zero_grad()
             
-            embedding = dataset.embed_token_ids(script_tokens)[:-1].to(device).to(torch.float32)
+            embedding = dataset.embed_token_ids(script_tokens).to(device).to(torch.float32)
             
-            _, pred = mlp_model(embedding)
-            target = script_tokens[0, 1:].to(device)
+            _, pred = mlp_model(embedding[0])
+            target = script_tokens[0, :-1].to(device)
             
-            loss = criterion(pred, target)
+            loss = criterion(pred[1:], target)
             loss.backward()
             
             optimiser.step()
