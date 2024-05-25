@@ -10,7 +10,7 @@ from typing import List, Iterator, Union
 episode_data_path = "data/SouthPark_Episodes.csv"
 line_data_path = "data/SouthPark_Lines.csv"
 
-truncate_to = 1024
+truncate_to = 100
 
 # tokenizer code
 
@@ -22,11 +22,10 @@ def _train_tokenizer(dataset: List[str]) -> None:
     
     _tokenizer = {char: i for i, char in enumerate(set("".join(dataset)))}
     
-    _tokenizer["\n"] = len(_tokenizer) # use this as padding
     _tokenizer["~"] = len(_tokenizer) # use this as padding
     _tokenizer["`"] = len(_tokenizer) # use this as EOS token
     
-    _reverse_tokenizer = {val: key for key, val in _tokenizer.items()}      
+    _reverse_tokenizer = {val: key for key, val in _tokenizer.items()}
 
 def text_to_ids(text: List[str]) -> List[List[int]]:
     if not isinstance(text, list):
@@ -38,7 +37,7 @@ def text_to_ids(text: List[str]) -> List[List[int]]:
         for char in s:
             res[-1].append(_tokenizer[char])
     
-    return Tensor(res).to(torch.int64)
+    return torch.LongTensor(res)
 
 def ids_to_text(ids: List[List[int]]) -> List[str]:
     res = []
@@ -68,7 +67,10 @@ def _init_scripts():
     lines = pd.read_csv(line_data_path)
     
     for line in lines.iloc:
-        new_line = f"{line['Character']}: {line['Line']}"
+        new_line = f"{line['Character']}: {line['Line']}".lower()
+        if not new_line.isascii():
+            continue
+        
         if len(_scripts) == 0:
             _scripts.append(new_line[:truncate_to - 1])
         elif len(_scripts[-1]) + len(new_line) < truncate_to - 1:
@@ -104,11 +106,11 @@ def get_scripts_tokens(as_tensors: bool = False) -> Iterator[Union[List[int], Te
 
 # embedding functions
 
-def embed_token_ids(tokens: Union[List[int], Tensor]) -> Tensor:
+def encode_token_ids(tokens: Union[List[int], Tensor]) -> Tensor:
     if isinstance(tokens, list):
-        tokens = Tensor(tokens).to(torch.int64)
+        tokens = Tensor(tokens).to(torch.long)
     
-    embedding = torch.zeros((tokens.shape[0], tokens.shape[1], get_vocab_size()), dtype=torch.float32)
+    embedding = torch.zeros((tokens.shape[0], tokens.shape[1], get_vocab_size()), dtype=torch.float32).to(tokens.device)
     
     embedding.scatter_(2, tokens.unsqueeze(-1), 1.0)
     

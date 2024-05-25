@@ -46,6 +46,8 @@ class RNNLayer(nn.Module):
                 width,
                 depth,
             )
+            
+        self.hidden = nn.Parameter(torch.rand((1, hidden_dim)))
         
         self._hidden_dim = hidden_dim
         self._output_dim = output_dim
@@ -56,9 +58,9 @@ class RNNLayer(nn.Module):
         Output is (hidden state, output)
         """
         if hidden is None:
-            hidden = torch.zeros((1, self._hidden_dim))
+            hidden = self.hidden
         
-        output = torch.empty((x.shape[0], self._hidden_dim + self._output_dim))
+        output = torch.zeros((x.shape[0], self._hidden_dim + self._output_dim))
         for i in range(x.shape[0]):
             features = torch.cat((x[i].view(1, -1), hidden.view(1, -1)), -1)
             
@@ -70,28 +72,39 @@ class RNNLayer(nn.Module):
     
 
 class SimpleLM(nn.Module):
-    def __init__(self, vocab_size: int, encoding_dim: int, hidden_dim: int, width: int, depth: int, rnn_layers: int, architecture: str = "MLP"):
+    def __init__(self, vocab_size: int, embedding_dim: int, width: int, depth: int, rnn_layers: int, architecture: str = "MLP"):
         super().__init__()
         
-        self.encoder = get_mlp(vocab_size, encoding_dim, 0, 0)
-        self.decoder = get_mlp(encoding_dim, vocab_size, 0, 0)
+        self.embedder = nn.Embedding(vocab_size, embedding_dim)
+        self.cls = nn.Sequential(get_mlp(embedding_dim, vocab_size, width, depth), nn.Softmax(-1))
         
-        self.rnns = nn.ModuleList([RNNLayer(encoding_dim, encoding_dim, hidden_dim, width, depth, architecture=architecture) for _ in range(rnn_layers)])
+        self.post_process = None
+        if architecture == "MLP":
+            self.cls = nn.Sequential(get_mlp(embedding_dim, vocab_size, width, depth), nn.Sigmoid())
+        else:
+            self.cls = get_kan(
+                embedding_dim,
+                vocab_size,
+                width,
+                depth,
+            )
+        
+        self.rnn = nn.RNN(
+            embedding_dim,
+            embedding_dim,
+            rnn_layers,
+            batch_first=True,
+        )
+        
+        
         
     def forward(self, x: Tensor, hidden: Optional[List[Tensor]] = None) -> Tuple[List[Tensor], Tensor]:
         """
         Performs forward pass. Returns output hidden state and output embeddings in that order.
         """
-        x = self.encoder(x)
+        x, h = self.rnn(self.embedder(x), hidden) if hidden is not None else self.rnn(self.embedder(x))
+        return h, self.cls(x)
         
-        h = []
-        for i, rnn_layer in enumerate(self.rnns):
-            hi, x = rnn_layer(x, hidden=hidden[i] if hidden is not None else None)
-            h.append(hi)
-        
-        x = self.decoder(x)
-        
-        return h, x
 
     def get_num_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters())
