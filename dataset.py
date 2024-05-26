@@ -11,7 +11,7 @@ import random
 episode_data_path = "data/SouthPark_Episodes.csv"
 line_data_path = "data/SouthPark_Lines.csv"
 
-truncate_to = 15
+max_episode_size = 4096
 
 # tokenizer code
 
@@ -93,7 +93,7 @@ def _init_scripts():
                 bad_episode = True
                 break
         if not bad_episode:
-            _scripts.append("\n".join(episode_script) + "`")
+            _scripts.append("\n".join(episode_script)[:max_episode_size])
     
     _train_tokenizer(_scripts)
     

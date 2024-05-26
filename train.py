@@ -5,7 +5,7 @@ import json
 from torch import optim, nn, Tensor
 from typing import Dict, Optional
 
-test_prompt = f"Cartman"
+test_prompt = "The Boys:School days, school days, teacher's golden ru...\nK"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 dataset._init_scripts()
@@ -13,9 +13,9 @@ dataset._init_scripts()
 def get_MLP_LM() -> models.SimpleLM:
     return models.SimpleLM(
         dataset.get_vocab_size(),
-        256,
-        256,
-        2,
+        512,
+        512,
+        4,
         2,
         architecture="MLP"
     )
@@ -89,7 +89,7 @@ if __name__ == "__main__":
     # First, let's train the MLP model
     mlp_model = get_MLP_LM().to(device)
     criterion = nn.CrossEntropyLoss()
-    optimiser = optim.Adam(mlp_model.parameters(), lr=3E-5)
+    optimiser = optim.Adam(mlp_model.parameters(), lr=3E-4)
     
     print(f"Model: {mlp_model.get_num_parameters()} params")
     
@@ -101,7 +101,7 @@ if __name__ == "__main__":
         
         json.dump(test_probs, open(f"models/demos/mlp_model_{epoch}.json", "w"))
         
-        batch_size, sequence_size = 128, 10
+        batch_size, sequence_size = 16, 15
         
         script_tokens = iter(dataset.get_scripts_tokens(batch_size, sequence_size))
         hidden: Optional[Tensor] = None
@@ -119,11 +119,11 @@ if __name__ == "__main__":
             
             hidden, pred = mlp_model(batch, hidden)
             
-            pred, batch = pred[mask], batch[mask]
+            #print(pred.shape, batch.shape, mask.shape)
             
-            print(pred.shape, batch.shape, mask.shape)
+            pred, batch = pred[:, :-1][mask[:, :-1]], batch[:, 1:][mask[:, :-1]]
             
-            loss = criterion(pred[:, :-1].flatten(0, 1), batch[:, 1:].flatten(0, 1))
+            loss = criterion(pred, batch)
             
             loss.backward()
             
