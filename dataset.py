@@ -3,6 +3,7 @@ import torch
 from torch import Tensor
 from tqdm import tqdm
 from typing import List, Iterator, Union
+import random
 
 
 # constants
@@ -10,7 +11,7 @@ from typing import List, Iterator, Union
 episode_data_path = "data/SouthPark_Episodes.csv"
 line_data_path = "data/SouthPark_Lines.csv"
 
-truncate_to = 100
+truncate_to = 15
 
 # tokenizer code
 
@@ -26,18 +27,30 @@ def _train_tokenizer(dataset: List[str]) -> None:
     _tokenizer["`"] = len(_tokenizer) # use this as EOS token
     
     _reverse_tokenizer = {val: key for key, val in _tokenizer.items()}
+    
 
-def text_to_ids(text: List[str]) -> List[List[int]]:
+def text_to_ids(text: List[str]) -> Tensor:
     if not isinstance(text, list):
         text = [text]
     
-    res = []
+    ids, masks, max_seq = [], [], 0
     for s in text:
-        res.append([])
+        s = [char for char in s.lower() if s.isascii()]
+        
+        ids.append([])
         for char in s:
-            res[-1].append(_tokenizer[char])
+            ids[-1].append(_tokenizer[char])
+
+        masks.append([1] * len(ids[-1]))
+        
+        if len(ids[-1]) > max_seq:
+            max_seq = len(ids[-1])
+            
+    for i in range(len(ids)):
+        ids[i].extend([_tokenizer["~"]] * (max_seq - len(ids[i])))
+        masks[i].extend([0] * (max_seq - len(masks[i])))
     
-    return torch.LongTensor(res)
+    return torch.LongTensor(ids), torch.ByteTensor(masks)
 
 def ids_to_text(ids: List[List[int]]) -> List[str]:
     res = []
@@ -55,53 +68,55 @@ def get_vocab_size() -> int:
 # dataset code
 
 _scripts = None
+_scripts_tokens = None
+_scripts_tokens_masks = None
 
 def _init_scripts():
     """
     Initializes script data from csvs. Each script is formatted episode by episode, the idea being we want
     this data to be together in order to predict plausible South Park episodes that sound 'logical'.
     """
-    global _scripts
+    global _scripts, _scripts_tokens, _scripts_tokens_masks
     _scripts = []
     
     lines = pd.read_csv(line_data_path)
+    episodes = pd.read_csv(episode_data_path)
     
-    for line in lines.iloc:
-        new_line = f"{line['Character']}: {line['Line']}".lower()
-        if not new_line.isascii():
-            continue
-        
-        if len(_scripts) == 0:
-            _scripts.append(new_line[:truncate_to - 1])
-        elif len(_scripts[-1]) + len(new_line) < truncate_to - 1:
-            _scripts[-1] += new_line
-        else:
-            _scripts[-1] += "`" + "~"*(truncate_to - len(_scripts[-1]) - 1)
-            _scripts.append(new_line[:truncate_to - 1])
+    lines.dropna(inplace=True)
+    
+    for episode in episodes.iloc:
+        episode_script, bad_episode = [], False
+        for line in lines.loc[lines["Title"] == episode["Title"]].iloc:
+            if line["Line"].isascii():
+                episode_script.append(f"{line['Character']}:{line['Line']}".lower())
+            else:
+                bad_episode = True
+                break
+        if not bad_episode:
+            _scripts.append("\n".join(episode_script) + "`")
     
     _train_tokenizer(_scripts)
+    
+    _scripts_tokens, _scripts_tokens_masks = text_to_ids(_scripts)
 
 
-def get_scripts() -> Iterator[str]:
-    """
-    Returns iterator that yield Southpark scripts.
-    """
-    global _scripts
-    if _scripts is None:
-        _init_scripts()
-        
-    for script in _scripts:
-        yield script
-
-
-def get_scripts_tokens(as_tensors: bool = False) -> Iterator[Union[List[int], Tensor]]:
+def get_scripts_tokens(batch_size, sequence_size) -> Iterator[Tensor]:
     """
     Returns iterator that yields tokenised Southpark scripts.
     """
-    scripts = iter(get_scripts())
+    if _scripts_tokens is None:
+        _init_scripts()
     
-    for script in scripts:
-        yield text_to_ids(script)
+    n_batches = _scripts_tokens.shape[0] // batch_size
+    n_sequences = _scripts_tokens.shape[1] // sequence_size
+    
+    for batch_num in range(n_batches):
+        for sequence_num in range(n_sequences):
+            yield (
+                _scripts_tokens[batch_num*batch_size:(batch_num + 1)*batch_size, sequence_num*sequence_size:(sequence_num+1)*sequence_size],
+                _scripts_tokens_masks[batch_num*batch_size:(batch_num + 1)*batch_size, sequence_num*sequence_size:(sequence_num+1)*sequence_size],
+                sequence_num == n_sequences - 1,
+            )
         
 
 # embedding functions

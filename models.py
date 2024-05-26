@@ -75,12 +75,12 @@ class SimpleLM(nn.Module):
     def __init__(self, vocab_size: int, embedding_dim: int, width: int, depth: int, rnn_layers: int, architecture: str = "MLP"):
         super().__init__()
         
-        self.embedder = nn.Embedding(vocab_size, embedding_dim)
-        self.cls = nn.Sequential(get_mlp(embedding_dim, vocab_size, width, depth), nn.Softmax(-1))
+        self.embedder = nn.Sequential(nn.Embedding(vocab_size, embedding_dim))
+        self.cls = None
         
         self.post_process = None
         if architecture == "MLP":
-            self.cls = nn.Sequential(get_mlp(embedding_dim, vocab_size, width, depth), nn.Sigmoid())
+            self.cls = nn.Sequential(get_mlp(embedding_dim, vocab_size, width, depth))
         else:
             self.cls = get_kan(
                 embedding_dim,
@@ -89,11 +89,13 @@ class SimpleLM(nn.Module):
                 depth,
             )
         
+        self.dropout = nn.Dropout1d(0)
         self.rnn = nn.RNN(
             embedding_dim,
             embedding_dim,
             rnn_layers,
             batch_first=True,
+            nonlinearity="relu",
         )
         
         
@@ -103,7 +105,7 @@ class SimpleLM(nn.Module):
         Performs forward pass. Returns output hidden state and output embeddings in that order.
         """
         x, h = self.rnn(self.embedder(x), hidden) if hidden is not None else self.rnn(self.embedder(x))
-        return h, self.cls(x)
+        return h, self.cls(self.dropout(x))
         
 
     def get_num_parameters(self) -> int:

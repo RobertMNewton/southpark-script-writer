@@ -2,10 +2,10 @@ import torch
 import dataset
 import models
 import json
-from torch import optim, nn
-from typing import Dict
+from torch import optim, nn, Tensor
+from typing import Dict, Optional
 
-test_prompt = f"at the bus st"
+test_prompt = f"Cartman"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 dataset._init_scripts()
@@ -13,11 +13,11 @@ dataset._init_scripts()
 def get_MLP_LM() -> models.SimpleLM:
     return models.SimpleLM(
         dataset.get_vocab_size(),
-        64,
+        256,
         256,
         2,
-        6,
-        architecture="MLP",
+        2,
+        architecture="MLP"
     )
 
 def get_KAN_LM() -> models.SimpleLM:
@@ -30,9 +30,9 @@ def get_KAN_LM() -> models.SimpleLM:
         architecture="KAN",
     )
     
-def predict_sequence(model: nn.Module, prompt: str, max_length: int = 50) -> str:
+def predict_sequence(model: nn.Module, prompt: str, max_length: int = 100) -> str:
     # Tokenize the input prompt
-    input_ids = dataset.text_to_ids(prompt).to(device)
+    input_ids, _ = dataset.text_to_ids(prompt)
 
     # Initialize hidden states as None
     hidden = None
@@ -67,7 +67,7 @@ def predict_sequence(model: nn.Module, prompt: str, max_length: int = 50) -> str
     return generated_text[0]
 
 def predict_probs(model: nn.Module, prompt: str) -> Dict[str, float]:
-    prompt_ids = dataset.text_to_ids(prompt)
+    prompt_ids, _ = dataset.text_to_ids(prompt)
     #prompt_encodings = dataset.encode_token_ids(prompt_ids)
     
     _, output = model(prompt_ids)
@@ -87,42 +87,49 @@ if __name__ == "__main__":
     epochs = 50
 
     # First, let's train the MLP model
-    mlp_model = get_MLP_LM().to(device).to(torch.float32)
+    mlp_model = get_MLP_LM().to(device)
     criterion = nn.CrossEntropyLoss()
-    optimiser = optim.Adam(mlp_model.parameters(), lr=3E-6)
+    optimiser = optim.Adam(mlp_model.parameters(), lr=3E-5)
     
     print(f"Model: {mlp_model.get_num_parameters()} params")
     
     for epoch in range(epochs):
-        test_script = predict_sequence(mlp_model, test_prompt, max_length=25)
+        test_script = predict_sequence(mlp_model, test_prompt, max_length=500)
         test_probs = predict_probs(mlp_model, test_prompt)
         with open(f"models/demos/mlp_model_{epoch}.txt", "w") as f:
             f.write(str(test_script))
         
         json.dump(test_probs, open(f"models/demos/mlp_model_{epoch}.json", "w"))
         
-        scripts = iter(dataset.get_scripts_tokens(as_tensors=True))
+        batch_size, sequence_size = 128, 10
         
-        batch_size = 128
-        n_batches = len(dataset._scripts) // batch_size
+        script_tokens = iter(dataset.get_scripts_tokens(batch_size, sequence_size))
+        hidden: Optional[Tensor] = None
         
-        for b in range(n_batches):
-            batch = torch.cat([next(scripts) for _ in range(batch_size)], 0)
-            batch = batch.to(device)
+        for b, batch_info in enumerate(script_tokens):
+            batch, mask = batch_info[0].to(device), batch_info[1].to(device)
+            
+            reset_hidden = batch_info[2]
+            if reset_hidden:
+                hidden = None
+            elif isinstance(hidden, Tensor):
+                hidden = hidden.data
             
             optimiser.zero_grad()
             
-            #embedding = dataset.encode_token_ids(batch).to(device).to(torch.float32)
+            hidden, pred = mlp_model(batch, hidden)
             
-            _, pred = mlp_model(batch)
+            pred, batch = pred[mask], batch[mask]
             
-            loss = criterion(pred[:, :-1], pred[:, 1:])
+            print(pred.shape, batch.shape, mask.shape)
+            
+            loss = criterion(pred[:, :-1].flatten(0, 1), batch[:, 1:].flatten(0, 1))
             
             loss.backward()
             
             optimiser.step()
             
-            print(f"MLP MODEL Epoch: {epoch}/{epochs}, batch: {b}/{n_batches}, Loss: {loss.item():.3f}")
+            print(f"MLP MODEL Epoch: {epoch}/{epochs}, step: {b}, Loss: {loss.item():.3f}")
             
     models.save_model(mlp_model, "models/mlp_lm.pt")
 
