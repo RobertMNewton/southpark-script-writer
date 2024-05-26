@@ -5,7 +5,7 @@ import json
 from torch import optim, nn, Tensor
 from typing import Dict, Optional
 
-test_prompt = "The Boys:School days, school days, teacher's golden ru...\nK"
+test_prompt = "The Boys:School days, school days, teacher's golden.\nKyle"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 dataset._init_scripts()
@@ -15,7 +15,7 @@ def get_MLP_LM() -> models.SimpleLM:
         dataset.get_vocab_size(),
         512,
         512,
-        4,
+        2,
         2,
         architecture="MLP"
     )
@@ -89,7 +89,7 @@ if __name__ == "__main__":
     # First, let's train the MLP model
     mlp_model = get_MLP_LM().to(device)
     criterion = nn.CrossEntropyLoss()
-    optimiser = optim.Adam(mlp_model.parameters(), lr=3E-4)
+    optimiser = optim.Adam(mlp_model.parameters(), lr=3E-6)
     
     print(f"Model: {mlp_model.get_num_parameters()} params")
     
@@ -101,7 +101,7 @@ if __name__ == "__main__":
         
         json.dump(test_probs, open(f"models/demos/mlp_model_{epoch}.json", "w"))
         
-        batch_size, sequence_size = 16, 15
+        batch_size, sequence_size = 64, 5
         
         script_tokens = iter(dataset.get_scripts_tokens(batch_size, sequence_size))
         hidden: Optional[Tensor] = None

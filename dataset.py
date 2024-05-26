@@ -4,6 +4,7 @@ from torch import Tensor
 from tqdm import tqdm
 from typing import List, Iterator, Union
 import random
+import re
 
 
 # constants
@@ -18,10 +19,18 @@ max_episode_size = 4096
 _tokenizer = None
 _reverse_tokenizer = None
 
+def custom_tokenize(text: str) -> List[str]:
+    pattern = re.compile(r'(\s+|[^\w\s])')
+    tokens = pattern.split(text)
+    tokens = [token for token in tokens if token]
+    return tokens
+
 def _train_tokenizer(dataset: List[str]) -> None:
     global _tokenizer, _reverse_tokenizer
     
-    _tokenizer = {char: i for i, char in enumerate(set("".join(dataset)))}
+    unique_tokens = set(custom_tokenize(" ".join(dataset).lower()))
+    
+    _tokenizer = {char: i for i, char in enumerate(unique_tokens)}
     
     _tokenizer["~"] = len(_tokenizer) # use this as padding
     _tokenizer["`"] = len(_tokenizer) # use this as EOS token
@@ -35,11 +44,11 @@ def text_to_ids(text: List[str]) -> Tensor:
     
     ids, masks, max_seq = [], [], 0
     for s in text:
-        s = [char for char in s.lower() if s.isascii()]
+        s = "".join([char for char in s.lower() if s.isascii()])
         
         ids.append([])
-        for char in s:
-            ids[-1].append(_tokenizer[char])
+        for token in custom_tokenize(s):
+            ids[-1].append(_tokenizer[token])
 
         masks.append([1] * len(ids[-1]))
         
@@ -106,6 +115,8 @@ def get_scripts_tokens(batch_size, sequence_size) -> Iterator[Tensor]:
     """
     if _scripts_tokens is None:
         _init_scripts()
+        
+    shuffle_indices = torch.randperm(_scripts_tokens.shape[0])
     
     n_batches = _scripts_tokens.shape[0] // batch_size
     n_sequences = _scripts_tokens.shape[1] // sequence_size
@@ -113,8 +124,8 @@ def get_scripts_tokens(batch_size, sequence_size) -> Iterator[Tensor]:
     for batch_num in range(n_batches):
         for sequence_num in range(n_sequences):
             yield (
-                _scripts_tokens[batch_num*batch_size:(batch_num + 1)*batch_size, sequence_num*sequence_size:(sequence_num+1)*sequence_size],
-                _scripts_tokens_masks[batch_num*batch_size:(batch_num + 1)*batch_size, sequence_num*sequence_size:(sequence_num+1)*sequence_size],
+                _scripts_tokens[shuffle_indices[batch_num*batch_size:(batch_num + 1)*batch_size], sequence_num*sequence_size:(sequence_num+1)*sequence_size],
+                _scripts_tokens_masks[shuffle_indices[batch_num*batch_size:(batch_num + 1)*batch_size], sequence_num*sequence_size:(sequence_num+1)*sequence_size],
                 sequence_num == n_sequences - 1,
             )
         

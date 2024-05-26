@@ -75,7 +75,7 @@ class SimpleLM(nn.Module):
     def __init__(self, vocab_size: int, embedding_dim: int, width: int, depth: int, rnn_layers: int, architecture: str = "MLP"):
         super().__init__()
         
-        self.embedder = nn.Sequential(nn.Embedding(vocab_size, embedding_dim), nn.Softmax(-1))
+        self.embedder = nn.Sequential(nn.Embedding(vocab_size, embedding_dim))
         self.cls = None
         
         self.post_process = None
