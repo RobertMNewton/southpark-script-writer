@@ -12,7 +12,7 @@ import re
 episode_data_path = "data/SouthPark_Episodes.csv"
 line_data_path = "data/SouthPark_Lines.csv"
 
-max_episode_size = 4096
+max_episode_size = 4000
 
 # tokenizer code
 
