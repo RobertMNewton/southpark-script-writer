@@ -110,15 +110,16 @@ def save_tokeniser(filepath: str, tokeniser: dict) -> None:
         json.dump(tokeniser, f)
         
         
-def load_tokeniser(filepath: str, tokeniser: dict) -> None:
+def load_tokeniser(filepath: str) -> None:
     tokeniser = None
     with open(filepath, "r") as f:
-        tokeniser = json.load(tokeniser, f)
+        tokeniser = json.load(f)
     
     # need to correct strings to integer ids inside json decodings
-    for k, v in tokeniser:
-        if k.isnumeric():
-            tokeniser[int(k)] = {int(k1): v1 for k1, v1 in v.items()}
+    keys = list(tokeniser.keys())
+    for k in keys:
+        if isinstance(k, str) and k.isnumeric():
+            tokeniser[int(k)] = {int(k1): v1 for k1, v1 in tokeniser[k].items()}
             del tokeniser[k]
     
     return tokeniser
@@ -161,12 +162,9 @@ def text_to_ids(text: Union[str, List[str]], tokeniser: TokeniserData, as_tensor
                 
                 # if we are here then there is no match. We should use "<UNK>" token to mark an unknown token.
                 i += 1
-                tokenised_sequence += tokeniser["detokeniser"]["<UNK>"]
+                tokenised_sequence += [tokeniser["detokeniser"]["<UNK>"]]
                 
             except BreakLoopTo:
-                if len(tokenised_sequence) == truncate_to:
-                    break
-                
                 continue
         
         if len(tokenised_sequence) > max_seq_len:
@@ -174,19 +172,19 @@ def text_to_ids(text: Union[str, List[str]], tokeniser: TokeniserData, as_tensor
         
         # if pad_to is specified and the sequence is not truncated then we should also pad the sequence. This is also important if as_tensor = True
         
-        if (as_tensor and truncate_to is not None) or pad_to:
-            pad_to = max_seq_len if pad_to is None or pad_to < max_seq_len else pad_to
+        if as_tensor or pad_to is not None:
+            if pad_to is None:
+                pad_to = max_seq_len
+            
             tokenised_sequence += [tokeniser["detokeniser"]["<UNK>"]]*max(0, pad_to - len(tokenised_sequence))
         
-        res.append(tokenised_sequence)
+        res.append(tokenised_sequence[:truncate_to])
     
     # Unbatch this if there is only one input string
     if len(res) == 1:
-        return res[0]
-    elif not as_tensor:
-        return res
+        res =  res[0]
     
-    return LongTensor(res)
+    return LongTensor(res) if as_tensor else res
         
               
 
