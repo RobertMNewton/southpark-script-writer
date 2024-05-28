@@ -33,7 +33,7 @@ def _train_tokenizer(dataset: List[str]) -> None:
     _tokenizer = {char: i for i, char in enumerate(unique_tokens)}
     
     _tokenizer["~"] = len(_tokenizer) # use this as padding
-    _tokenizer["`"] = len(_tokenizer) # use this as EOS token
+    _tokenizer["`"] = len(_tokenizer) # use this as CLS token
     
     _reverse_tokenizer = {val: key for key, val in _tokenizer.items()}
     

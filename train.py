@@ -13,11 +13,20 @@ dataset._init_scripts()
 def get_MLP_LM() -> models.SimpleLM:
     return models.SimpleLM(
         dataset.get_vocab_size(),
-        512,
-        300,
+        256,
+        1024,
         2,
         2,
         architecture="MLP"
+    )
+    
+def get_transformer_LM() -> models.SimpleTransformerLM:
+    return models.SimpleTransformerLM(
+        dataset.get_vocab_size(),
+        1024,
+        256,
+        2,
+        2,
     )
 
 def get_KAN_LM() -> models.SimpleLM:
@@ -30,9 +39,10 @@ def get_KAN_LM() -> models.SimpleLM:
         architecture="KAN",
     )
     
-def predict_sequence(model: nn.Module, prompt: str, max_length: int = 100) -> str:
+def predict_sequence(model: nn.Module, prompt: str, max_length: int = 100, type: str = "rnn") -> str:
     # Tokenize the input prompt
     input_ids, _ = dataset.text_to_ids(prompt)
+    cls_token, _ = dataset.text_to_ids("`")
 
     # Initialize hidden states as None
     hidden = None
@@ -46,31 +56,35 @@ def predict_sequence(model: nn.Module, prompt: str, max_length: int = 100) -> st
         #embedding = dataset.encode_token_ids(input_ids).to(device)
 
         # Forward pass through the model
-        hidden, pred = model(input_ids, hidden)
+        pred = None
+        if type == "rnn":
+            hidden, pred = model(input_ids, hidden)
+        else:
+            pred = model(input_ids)
 
         # Get the ID of the predicted token (choose the token with the highest probability)
-        pred_id = torch.argmax(pred[:, -1], dim=-1).item()
+        pred_id = torch.argmax(pred[:, -1], dim=-1)
 
         # Append the predicted token ID to the generated_ids list
-        generated_ids.append(pred_id)
-
-        # Check if the <EOS> token is generated
-        if pred_id == "`":
-            break
+        generated_ids.append(pred_id.item())
 
         # Update the input_ids for the next iteration
-        input_ids = torch.tensor([[pred_id]], device=device)
+        input_ids = torch.cat((input_ids, pred_id.unsqueeze(0)), 1)
 
     # Convert the generated token IDs back to text
     generated_text = dataset.ids_to_text([generated_ids])
 
     return generated_text[0]
 
-def predict_probs(model: nn.Module, prompt: str) -> Dict[str, float]:
+def predict_probs(model: nn.Module, prompt: str, type: str = "rnn") -> Dict[str, float]:
     prompt_ids, _ = dataset.text_to_ids(prompt)
     #prompt_encodings = dataset.encode_token_ids(prompt_ids)
     
-    _, output = model(prompt_ids)
+    output = None
+    if type == "rnn":
+        _, output = model(prompt_ids)
+    else:
+        output = model(prompt_ids)
     
     # output formatting should be (B, L, N), we can then construct our dictionary from this.
     res = {}
@@ -84,24 +98,29 @@ def predict_probs(model: nn.Module, prompt: str) -> Dict[str, float]:
 
 if __name__ == "__main__":
     
-    epochs = 1000
+    epochs = 300
 
     # First, let's train the MLP model
     mlp_model = get_MLP_LM().to(device)
     criterion = nn.CrossEntropyLoss()
-    optimiser = optim.Adam(mlp_model.parameters(), lr=3E-4)
+    optimiser = optim.Adam(mlp_model.parameters(), lr=6E-5)
+    
+    json.dump(dataset._tokenizer, open("tokeniser.json", "w"))    
     
     print(f"Model: {mlp_model.get_num_parameters()} params")
+    
     
     for epoch in range(epochs):
         test_script = predict_sequence(mlp_model, test_prompt, max_length=500)
         test_probs = predict_probs(mlp_model, test_prompt)
-        with open(f"models/demos/mlp_model_{epoch}.txt", "w") as f:
+        with open(f"models/rnn/mlp_model_{epoch}.txt", "w") as f:
             f.write(str(test_script))
         
-        json.dump(test_probs, open(f"models/demos/mlp_model_{epoch}.json", "w"))
+        json.dump(test_probs, open(f"models/rnn/{epoch}.json", "w"))
         
         batch_size, sequence_size = 16, 8
+        
+        running_loss, running_acc = 0, 0
         
         script_tokens = iter(dataset.get_scripts_tokens(batch_size, sequence_size))
         hidden: Optional[Tensor] = None
@@ -125,39 +144,64 @@ if __name__ == "__main__":
             
             loss = criterion(pred, batch)
             
+            if torch.isnan(loss):
+                continue
+            
             loss.backward()
             
             optimiser.step()
             
-            print(f"MLP MODEL Epoch: {epoch}/{epochs}, step: {b}, Loss: {loss.item():.3f}")
+            accuracy = torch.sum(torch.argmax(pred, -1) == batch).float().mean()
             
-    models.save_model(mlp_model, "models/mlp_lm.pt")
+            running_acc += accuracy.item()
+            running_loss += loss.item()
+            
+            print(f"RNN MODEL Epoch: {epoch}/{epochs}, step: {b}, Loss: {loss.item():.2f}, Accuracy: {accuracy.item():.1f}%, Mean Loss: {running_loss / (b + 1):.2f}, Running Accuracy: {running_acc / (b + 1):.2f}%")
+            
+    models.save_model(mlp_model, "models/rnn_lm.pt")
 
-    # Second, let's train the KAN model
-    kan_model = get_KAN_LM().to(device).to(torch.float32)
+    # Second, let's train the transformer model
+    mlp_model = get_transformer_LM().to(device)
     criterion = nn.CrossEntropyLoss()
-    optimiser = optim.Adam(kan_model.parameters(), lr=3E-2)
+    optimiser = optim.Adam(mlp_model.parameters(), lr=1E-4)
+    
+    print(f"Model: {mlp_model.get_num_parameters()} params")
     
     for epoch in range(epochs):
-        test_script = predict_sequence(kan_model, test_prompt, max_length=5000)
-        with open(f"models/demos/kan_model_{epoch}.txt", "w") as f:
-            f.write(test_script)
+        test_script = predict_sequence(mlp_model, test_prompt, max_length=100, type="transformer")
+        test_probs = predict_probs(mlp_model, test_prompt, type="transformer")
+        with open(f"models/transformer/{epoch}.txt", "w") as f:
+            f.write(str(test_script))
+        
+        json.dump(test_probs, open(f"models/transformer/{epoch}.json", "w"))
+        
+        batch_size, sequence_size = 16, 100
+        
+        script_tokens = iter(dataset.get_scripts_tokens(batch_size, sequence_size))
+        cls_tokens = dataset.text_to_ids(["`"]*batch_size)
+        
+        for b, batch_info in enumerate(script_tokens):
+            batch, mask = batch_info[0].to(device), batch_info[1].to(device)
             
-        scripts = dataset.get_scripts_tokens(as_tensors=True)
-        for step, script_tokens in enumerate(scripts):
-            script_tokens = script_tokens.to(device)
             optimiser.zero_grad()
             
-            encoding = dataset.encode_token_ids(script_tokens)[:-1].to(device).to(torch.float32)
+            labels = batch
             
-            _, pred = kan_model(encoding)
-            target = script_tokens[0, 1:].to(device)
+            #features = torch.cat((batch[:, :-1], cls_tokens), 2)
+            pred = mlp_model(batch[:, :-1])
             
-            loss = criterion(pred, target)
+            #print(pred.shape, batch.shape, mask.shape)
+            
+            pred, batch = pred[mask[:, :-1]], batch[:, 1:][mask[:, :-1]]
+            
+            loss = criterion(pred, batch)
+            
             loss.backward()
             
             optimiser.step()
             
-            print(f"KAN MODEL... Epoch: {epoch}, Step: {step}, Loss: {loss.item():.3f}")
+            accuracy = torch.sum(torch.argmax(pred, -1) == batch).float().mean()
             
-    models.save_model(kan_model, "models/kan_lm.pt")
+            print(f"Transformer MODEL Epoch: {epoch}/{epochs}, step: {b}, Loss: {loss.item():.2f}, Accuracy: {accuracy.item():.1f}%")
+        
+        models.save_model(mlp_model, "models/transformer_LM.pt")

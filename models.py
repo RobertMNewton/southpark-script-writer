@@ -75,7 +75,7 @@ class SimpleLM(nn.Module):
     def __init__(self, vocab_size: int, hidden_dim: int, embedding_dim: int, depth: int, rnn_layers: int, architecture: str = "MLP"):
         super().__init__()
         
-        self.embedder = nn.Sequential(nn.Embedding(vocab_size, embedding_dim), nn.Softmax(-1))
+        self.embedder = nn.Sequential(nn.Embedding(vocab_size, embedding_dim))
         self.cls = None
         
         self.post_process = None
@@ -94,6 +94,7 @@ class SimpleLM(nn.Module):
             hidden_dim,
             rnn_layers,
             batch_first=True,
+            dropout=0.1,
         )
         
         self.hidden_size = hidden_dim
@@ -107,6 +108,41 @@ class SimpleLM(nn.Module):
         """
         x, h = self.rnn(self.embedder(x), hidden) if hidden is not None else self.rnn(self.embedder(x))
         return h, self.cls(x.reshape(-1, self.hidden_size)).reshape(x.shape[0], x.shape[1], self.vocab_size)
+        
+
+    def get_num_parameters(self) -> int:
+        return sum(p.numel() for p in self.parameters())
+    
+
+class SimpleTransformerLM(nn.Module):
+    def __init__(self, vocab_size: int, hidden_dim: int, embedding_dim: int, depth: int, transformer_layers: int, h_head: int = 8):
+        super().__init__()
+        
+        self.embedder = nn.Sequential(nn.Embedding(vocab_size, embedding_dim), nn.Linear(embedding_dim, hidden_dim))
+        self.cls = nn.Linear(hidden_dim, vocab_size)
+            
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(
+                hidden_dim,
+                8,
+                dim_feedforward=256,
+                batch_first=True,
+                dropout=0,
+            ),
+            transformer_layers,
+        )
+        
+        self.hidden_size = hidden_dim
+        self.vocab_size = vocab_size
+        
+        
+        
+    def forward(self, x: Tensor) -> Tensor:
+        """
+        Performs forward pass. Returns output hidden state and output embeddings in that order.
+        """
+        x = self.transformer(self.embedder(x))
+        return self.cls(x.reshape(-1, self.hidden_size)).reshape(x.shape[0], x.shape[1], self.vocab_size)
         
 
     def get_num_parameters(self) -> int:
