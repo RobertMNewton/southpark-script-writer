@@ -13,8 +13,8 @@ class BreakLoopTo(Exception):
 
 TokeniserData = Dict[Union[int, str], Dict[str, int]]
 
-def train_tokeniser_from_text(text: str, max_iterations: int  = 2000, extra: List[str] = ["<EOS>", "<PAD>", "<CLS>", "<UNK>", "<MASK>", "<BOS>", "<SEP>"]) -> TokeniserData:    
-    tokeniser, max_token_length = {1: list(set(text))}, 1
+def train_tokeniser_from_text(text: str, max_iterations: int  = 1000, extra: List[str] = ["<EOS>", "<PAD>", "<CLS>", "<UNK>", "<MASK>", "<BOS>", "<SEP>"], tokeniser: Optional[TokeniserData] = None) -> TokeniserData:    
+    tokeniser, max_token_length = {1: list(set(text))} if tokeniser is None else tokeniser, 1
     
     pg = tqdm(range(max_iterations), dynamic_ncols=True)
     for _ in pg:
@@ -111,44 +111,96 @@ def save_tokeniser(filepath: str, tokeniser: dict) -> None:
         
         
 def load_tokeniser(filepath: str, tokeniser: dict) -> None:
-    with open(filepath, "w") as f:
-        json.jump(tokeniser, f)
+    tokeniser = None
+    with open(filepath, "r") as f:
+        tokeniser = json.load(tokeniser, f)
+    
+    # need to correct strings to integer ids inside json decodings
+    for k, v in tokeniser:
+        if k.isnumeric():
+            tokeniser[int(k)] = {int(k1): v1 for k1, v1 in v.items()}
+            del tokeniser[k]
+    
+    return tokeniser
         
 
-def tokenise_text(text: Union[str, List[str]], tokeniser: TokeniserData, as_tensor: bool = True) -> Union[Union[List[int], List[List[int]]], LongTensor]:
+def text_to_ids(text: Union[str, List[str]], tokeniser: TokeniserData, as_tensor: bool = True, truncate_to: Optional[int] = None, pad_to: Optional[int] = None) -> Union[Union[List[int], List[List[int]]], LongTensor]:
+    """
+    Converts text to ids. If the text is batched and as_tensor = True and truncate_to = None then will automatically pad to maximum sequence length.
+    """
     if isinstance(text, str):
         text = [text]
     
+    res, max_seq_len = [], 0
     for sequence in text:
         tokenised_sequence, i = [], 0
-    
-    pass
-
-# test train_tokeniser real quick
-
-episode_data_path = "data/SouthPark_Episodes.csv"
-line_data_path = "data/SouthPark_Lines.csv"
-
-_scripts = []
-    
-lines = pd.read_csv(line_data_path)
-episodes = pd.read_csv(episode_data_path)
-
-lines.dropna(inplace=True)
-
-for episode in episodes.iloc:
-    episode_script, bad_episode = [], False
-    for line in lines.loc[lines["Title"] == episode["Title"]].iloc:
-        if line["Line"].isascii():
-            episode_script.append(f"{line['Character']}:{line['Line']}".lower())
-        else:
-            bad_episode = True
-            break
-    if not bad_episode:
-        _scripts.append("\n".join(episode_script))
         
-tokeniser = train_tokeniser_from_text("\n".join(_scripts))
-save_tokeniser("./southpark_tokens_all.json", tokeniser)
+        while i < len(sequence):
+            try:
+                # should check for special tokens first
+                for id, token in tokeniser["extra"].items():
+                    if len(sequence) - i < len(token):
+                        continue
+                    elif tokenised_sequence[i:i+len(token)] == token:
+                        tokenised_sequence.append(id)
+                        i += len(token)
+                        
+                        raise BreakLoopTo()
+                    
+                # should then check for other tokens in order of largest tokens to smallest tokens
+                for token_length in tokeniser["token_lengths"]:
+                    if len(sequence) - i < token_length:
+                        continue
+                    
+                    token_id = tokeniser["detokeniser"].get(sequence[i:i+token_length])
+                    if token_id is not None:
+                        tokenised_sequence.append(token_id)
+                        i += token_length
+                        
+                        raise BreakLoopTo()
+                
+                # if we are here then there is no match. We should use "<UNK>" token to mark an unknown token.
+                i += 1
+                tokenised_sequence += tokeniser["detokeniser"]["<UNK>"]
+                
+            except BreakLoopTo:
+                if len(tokenised_sequence) == truncate_to:
+                    break
+                
+                continue
         
+        if len(tokenised_sequence) > max_seq_len:
+            max_seq_len = len(tokenised_sequence)
+        
+        # if pad_to is specified and the sequence is not truncated then we should also pad the sequence. This is also important if as_tensor = True
+        
+        if (as_tensor and truncate_to is not None) or pad_to:
+            pad_to = max_seq_len if pad_to is None or pad_to < max_seq_len else pad_to
+            tokenised_sequence += [tokeniser["detokeniser"]["<UNK>"]]*max(0, pad_to - len(tokenised_sequence))
+        
+        res.append(tokenised_sequence)
+    
+    # Unbatch this if there is only one input string
+    if len(res) == 1:
+        return res[0]
+    elif not as_tensor:
+        return res
+    
+    return LongTensor(res)
+        
+              
+
+def ids_to_text(ids: Union[LongTensor, Union[List[int], List[List[int]]]], tokeniser: TokeniserData) -> Union[List[str], str]:
+    # first we convert to Python list and batch input if it is not already. We will undo this at the end if necessary.
+    if isinstance(ids, LongTensor):
+        ids = ids.tolist()
+    if isinstance(ids[0], int):
+        ids = [ids]
+        
+    detokeniser = {id: token for token, id in tokeniser["detokeniser"].items()}  # TODO: fix this. Is backwards the way I programmed it above!
+    res = ["".join([detokeniser[id] for id in sequence_ids]) for sequence_ids in ids]
+    
+    return res if len(res) > 1 else res[0]
+  
         
     
