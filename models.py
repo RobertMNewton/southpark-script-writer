@@ -1,5 +1,5 @@
 import torch
-from torch import optim, nn, Tensor
+from torch import LongTensor, optim, nn, Tensor
 from fastkan import FastKAN as KAN
 from typing import List, Optional, Tuple
 
@@ -75,10 +75,10 @@ class SimpleLM(nn.Module):
     def __init__(self, vocab_size: int, hidden_dim: int, embedding_dim: int, depth: int, rnn_layers: int, architecture: str = "MLP"):
         super().__init__()
         
-        self.embedder = nn.Sequential(nn.Embedding(vocab_size, embedding_dim))
-        self.cls = None
+        #self.embedder = nn.Sequential(nn.Embedding(vocab_size, embedding_dim))
+        self.embedder = nn.Parameter(torch.rand((vocab_size, embedding_dim)))
         
-        self.post_process = None
+        self.cls = None
         if architecture == "MLP":
             self.cls = nn.Linear(hidden_dim, vocab_size)
         else:
@@ -94,20 +94,25 @@ class SimpleLM(nn.Module):
             hidden_dim,
             rnn_layers,
             batch_first=True,
-            dropout=0.1,
+            dropout=0.2,
         )
+        
+        self.norm = nn.LayerNorm(hidden_dim)
         
         self.hidden_size = hidden_dim
         self.vocab_size = vocab_size
         
         
         
-    def forward(self, x: Tensor, hidden: Optional[List[Tensor]] = None) -> Tuple[List[Tensor], Tensor]:
+    def forward(self, x: LongTensor, hidden: Optional[List[Tensor]] = None) -> Tuple[List[Tensor], Tensor]:
         """
         Performs forward pass. Returns output hidden state and output embeddings in that order.
         """
-        x, h = self.rnn(self.embedder(x), hidden) if hidden is not None else self.rnn(self.embedder(x))
-        return h, self.cls(x.reshape(-1, self.hidden_size)).reshape(x.shape[0], x.shape[1], self.vocab_size)
+        embeddings = self.embedder[x]
+        
+        x, h = self.rnn(embeddings, hidden) if hidden is not None else self.rnn(embeddings)
+        normed_x = self.norm(x)
+        return h, self.cls(normed_x.reshape(-1, self.hidden_size)).reshape(x.shape[0], x.shape[1], self.vocab_size)
         
 
     def get_num_parameters(self) -> int:

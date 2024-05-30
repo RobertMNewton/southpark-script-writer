@@ -1,3 +1,4 @@
+import os
 import torch
 import dataset
 import better_tokens
@@ -5,19 +6,26 @@ import models
 import json
 from torch import optim, nn, Tensor
 from typing import Dict, Optional
+import random
 
-test_prompt = "Kyle:Yeah, they're almost as big as his mom's.\nScene Description:The others laugh.\nCartman:".lower()
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 dataset._init_scripts()
+
+#mean_sequence_length = sum([len(better_tokens.text_to_ids(episode, dataset.tokeniser)) for episode in dataset._scripts]) / len(dataset._scripts)
+#print(f"Mean Sequence Length: {mean_sequence_length}")
+
+test_prompt = ""
+model_name = "large-rnn"
 
 def get_MLP_LM() -> models.SimpleLM:
     return models.SimpleLM(
         dataset.get_vocab_size(),
-        512,
+        1024,
         300,
         2,
-        2,
+        3,
         architecture="MLP"
     )
     
@@ -42,8 +50,7 @@ def get_KAN_LM() -> models.SimpleLM:
     
 def predict_sequence(model: nn.Module, prompt: str, max_length: int = 100, type: str = "rnn") -> str:
     # Tokenize the input prompt
-    input_ids = better_tokens.text_to_ids(prompt, dataset.tokeniser).unsqueeze(0)
-    cls_token = dataset.tokeniser["detokeniser"]["<CLS>"]
+    input_ids = better_tokens.text_to_ids(prompt, dataset.tokeniser, add_eos_token=False)[0].unsqueeze(0).to(device)
 
     # Initialize hidden states as None
     hidden = None
@@ -101,16 +108,33 @@ if __name__ == "__main__":
     # First, let's train the MLP model
     mlp_model = get_MLP_LM().to(device)
     criterion = nn.CrossEntropyLoss()
-    optimiser = optim.Adam(mlp_model.parameters(), lr=6E-5)    
+    optimiser = optim.Adam(mlp_model.parameters(), lr=7E-5)    
+    
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimiser,
+        mode='min',
+        factor=0.5,
+        patience=1,
+        threshold=0.001,
+        threshold_mode='rel',
+        cooldown=0,
+        min_lr=0,
+        eps=1e-08,
+        )
     
     print(f"Model: {mlp_model.get_num_parameters()} params")
     
     for epoch in range(epochs):
-        test_script = predict_sequence(mlp_model, test_prompt, max_length=500)
-        with open(f"models/rnn/mlp_model_{epoch}.txt", "w") as f:
-            f.write(str(test_script))
+        if epoch % 10 == 0:
+            test_script = predict_sequence(mlp_model, test_prompt, max_length=500)
+            os.makedirs(os.path.dirname(f"./models/{model_name}/test_sequences/e{epoch}.txt"), exist_ok=True)
+            with open(f"models/{model_name}/test_sequences/e{epoch}.txt", "w") as f:
+                f.write(str(test_script))
+            
+            os.makedirs(os.path.dirname(f"./models/{model_name}/checkpoints/e{epoch}.pt"), exist_ok=True)
+            models.save_model(mlp_model, f"models/{model_name}/checkpoints/e{epoch}.pt")
         
-        batch_size, sequence_size = 16, 8
+        batch_size, sequence_size = 16, 48
         
         running_loss, running_acc = 0, 0
         
@@ -118,19 +142,16 @@ if __name__ == "__main__":
         hidden: Optional[Tensor] = None
         
         for b, batch_info in enumerate(script_tokens):
-            batch = batch_info[0].to(device)
+            batch, batch_masks = batch_info[0].to(device), batch_info[1].to(device)
             
-            reset_hidden = batch_info[1]
-            if reset_hidden:
-                hidden = None
-            elif isinstance(hidden, Tensor):
+            if isinstance(hidden, Tensor):
                 hidden = hidden.data
             
             optimiser.zero_grad()
             
             hidden, pred = mlp_model(batch, hidden)
             
-            pred, batch = pred[:, :-1].flatten(0,1), batch[:, 1:].flatten()
+            pred, batch = pred[:, :-1][batch_masks[:, :-1]], batch[:, 1:][batch_masks[:, :-1]]
             
             loss = criterion(pred, batch)
             
@@ -141,12 +162,18 @@ if __name__ == "__main__":
             
             optimiser.step()
             
-            accuracy = torch.sum(torch.argmax(pred, -1) == batch).float().mean()
+            accuracy = (torch.argmax(pred, -1) == batch).sum().float() / batch.numel() * 100
             
             running_acc += accuracy.item()
             running_loss += loss.item()
             
-            print(f"RNN MODEL Epoch: {epoch}/{epochs}, step: {b}, Loss: {loss.item():.2f}, Accuracy: {accuracy.item():.1f}%, Mean Loss: {running_loss / (b + 1):.2f}, Running Accuracy: {running_acc / (b + 1):.2f}%")
+            print(f"E: {epoch}/{epochs}, s: {b}, L: {loss.item():.2f}, A: {accuracy.item():.1f}%, Lavg: {running_loss / (b + 1):.2f}, Aavg: {running_acc / (b + 1):.2f}%, lr: {scheduler.get_last_lr()[0]:.2E}")
+            
+            reset_hidden = batch_info[2]
+            if reset_hidden:
+                hidden = None
+        
+        scheduler.step(running_loss / (b + 1))
             
     models.save_model(mlp_model, "models/rnn_lm.pt")
 
@@ -165,7 +192,7 @@ if __name__ == "__main__":
         
         json.dump(test_probs, open(f"models/transformer/{epoch}.json", "w"))
         
-        batch_size, sequence_size = 16, 100
+        batch_size, sequence_size = 16, 30
         
         script_tokens = iter(dataset.get_scripts_tokens(batch_size, sequence_size))
         cls_tokens = dataset.text_to_ids(["`"]*batch_size)
