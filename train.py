@@ -17,7 +17,7 @@ dataset._init_scripts()
 #print(f"Mean Sequence Length: {mean_sequence_length}")
 
 test_prompt = ""
-model_name = "large-rnn"
+model_name = "rnn-small-1024-300-3"
 
 def get_MLP_LM() -> models.SimpleLM:
     return models.SimpleLM(
@@ -103,7 +103,7 @@ def predict_probs(model: nn.Module, prompt: str, type: str = "rnn") -> Dict[str,
 
 if __name__ == "__main__":
     
-    epochs = 300
+    epochs = 101
 
     # First, let's train the MLP model
     mlp_model = get_MLP_LM().to(device)
@@ -114,7 +114,7 @@ if __name__ == "__main__":
         optimiser,
         mode='min',
         factor=0.5,
-        patience=1,
+        patience=5,
         threshold=0.001,
         threshold_mode='rel',
         cooldown=0,
@@ -123,6 +123,9 @@ if __name__ == "__main__":
         )
     
     print(f"Model: {mlp_model.get_num_parameters()} params")
+    
+    batch_sizes, sequence_sizes = [148, 120, 96, 72, 48, 24], [8, 16, 32, 64, 128, 256]
+    batch_size, sequence_size = None, None
     
     for epoch in range(epochs):
         if epoch % 10 == 0:
@@ -133,8 +136,9 @@ if __name__ == "__main__":
             
             os.makedirs(os.path.dirname(f"./models/{model_name}/checkpoints/e{epoch}.pt"), exist_ok=True)
             models.save_model(mlp_model, f"models/{model_name}/checkpoints/e{epoch}.pt")
-        
-        batch_size, sequence_size = 16, 48
+            
+            if epoch < 60:
+                batch_size, sequence_size = batch_sizes[epoch // 10], sequence_sizes[epoch // 10]
         
         running_loss, running_acc = 0, 0
         
@@ -153,14 +157,17 @@ if __name__ == "__main__":
             
             pred, batch = pred[:, :-1][batch_masks[:, :-1]], batch[:, 1:][batch_masks[:, :-1]]
             
-            loss = criterion(pred, batch)
-            
-            if torch.isnan(loss):
-                continue
-            
-            loss.backward()
-            
-            optimiser.step()
+            try:
+                loss = criterion(pred, batch)
+                
+                if torch.isnan(loss):
+                    continue
+                
+                loss.backward()
+                
+                optimiser.step()
+            except Exception as e:
+                print(f'Warning: {e}')
             
             accuracy = (torch.argmax(pred, -1) == batch).sum().float() / batch.numel() * 100
             

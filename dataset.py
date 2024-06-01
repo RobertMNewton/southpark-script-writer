@@ -11,7 +11,7 @@ from typing import List, Iterator, Union
 episode_data_path = "data/SouthPark_Episodes.csv"
 line_data_path = "data/SouthPark_Lines.csv"
 
-max_episode_size = 8000
+max_episode_size = 8009
 
 # tokeniser code
 

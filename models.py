@@ -94,7 +94,7 @@ class SimpleLM(nn.Module):
             hidden_dim,
             rnn_layers,
             batch_first=True,
-            dropout=0.2,
+            dropout=0.1,
         )
         
         self.norm = nn.LayerNorm(hidden_dim)
